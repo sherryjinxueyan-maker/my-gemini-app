@@ -1,0 +1,7 @@
+{
+  "name": "Virtual Self Companion",
+  "description": "A digital mirror built on the Jinpei Yagi methodology. It builds a full-dimensional personal experience library to guide your self-exploration and solve real-world problems with a personalized AI companion.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
