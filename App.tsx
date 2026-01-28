@@ -12,12 +12,12 @@ import WeeklyRetrospective from './components/WeeklyRetrospective';
 import CapabilityTree from './components/CapabilityTree';
 import Onboarding from './components/Onboarding';
 import { speechService } from './services/speechService';
-import { Radar, RadarChart, PolarGrid, PolarAngleAxis, ResponsiveContainer, RadarProps } from 'recharts';
+import { Radar, RadarChart, PolarGrid, PolarAngleAxis, ResponsiveContainer, RadarProps, Radar as RechartsRadar } from 'recharts';
 
 type View = 'LIBRARY' | 'COMPANION' | 'EXPLORE' | 'TASKS';
 
 const App: React.FC = () => {
-  console.log("当前 API Key 加载状态:", import.meta.env.VITE_API_KEY ? "已连接" : "未找到");
+console.log("当前 API Key 加载状态:", import.meta.env.VITE_API_KEY ? "已连接" : "未找到");
   const [library, setLibrary] = useState<ExperienceEntry[]>([]);
   const [profile, setProfile] = useState<VirtualSelfProfile | null>(null);
   const [currentView, setCurrentView] = useState<View>('LIBRARY');
@@ -51,7 +51,7 @@ const App: React.FC = () => {
     console.error("App Error:", e);
     const msg = e?.message || "发生未知错误";
     if (msg.includes("quota") || msg.includes("429")) {
-      setErrorMsg("Gemini API 配额不足，请稍后重试或更换 Key。");
+      setErrorMsg("Gemini API 配额不足，请稍后重试。");
     } else if (msg.includes("思想构建失败")) {
       setErrorMsg("数据解析异常，请尝试精简输入内容。");
     } else {
@@ -60,30 +60,29 @@ const App: React.FC = () => {
     setTimeout(() => setErrorMsg(null), 6000);
   };
 
+  const saveAll = useCallback((newLib: ExperienceEntry[], newProfile: VirtualSelfProfile | null, newTasks: ActionTask[], newPlan: GrowthPlan | null) => {
+    storageService.saveLibrary(newLib);
+    if (newProfile) storageService.saveProfile(newProfile);
+    storageService.saveTasks(newTasks);
+    if (newPlan) storageService.savePlan(newPlan);
+  }, []);
+
   const handleOnboardingComplete = async (data: OnboardingData) => {
     setIsProcessing(true);
     setOnboardingStatus('正在深度对齐人格数据库...');
     try {
-      // 1. 逻辑合成
       const { profile: initProfile, entries: initEntries } = await gemini.initializeProfileFromOnboarding(data);
-      
-      // 2. 形象塑造（不阻塞主流程，失败则使用默认头像）
       setOnboardingStatus('正在合成数字生命形象...');
       let avatarUrl = "";
       try {
         avatarUrl = await gemini.generateAvatarFromOOTD(initProfile.ootd!, initProfile.gender);
       } catch (imgError) {
-        console.warn("图像生成失败，将使用默认占位", imgError);
+        console.warn("图像生成失败", imgError);
       }
-      
       const finalProfile = { ...initProfile, avatarUrl, initialized: true };
-      
-      // 3. 原子更新状态
       setProfile(finalProfile);
       setLibrary(initEntries);
-      storageService.saveProfile(finalProfile);
-      storageService.saveLibrary(initEntries);
-      
+      saveAll(initEntries, finalProfile, [], null);
       setSpeech("我已降临。你的过去、现在与未来，我都已悉知。");
       setCurrentView('COMPANION');
     } catch (e) {
@@ -104,19 +103,14 @@ const App: React.FC = () => {
         id: Math.random().toString(36).substr(2, 9),
         timestamp: Date.now(),
       } as ExperienceEntry));
-      
       const updatedLib = [...newEntries, ...library];
       setLibrary(updatedLib);
       setRawInput('');
-      
-      // 更新档案
       setIsTyping(true);
       const newProfile = await gemini.updateProfile(updatedLib, profile.gender);
       if (profile.avatarUrl) newProfile.avatarUrl = profile.avatarUrl;
       setProfile(newProfile);
-      storageService.saveProfile(newProfile);
-      storageService.saveLibrary(updatedLib);
-      
+      saveAll(updatedLib, newProfile, tasks, growthPlan);
       const responseSpeech = await gemini.getCompanionSpeech("用户录入了新经历", newProfile);
       setSpeech(responseSpeech);
     } catch (e) {
@@ -155,6 +149,74 @@ const App: React.FC = () => {
     }
   };
 
+  const handleGeneratePlan = async () => {
+    if (!profile) return;
+    setIsProcessing(true);
+    try {
+      const plan = await gemini.generateGrowthPlan(profile, library);
+      setGrowthPlan(plan);
+      const newTasks: ActionTask[] = plan.suggestedTasks.map(t => ({
+        id: Math.random().toString(36).substr(2, 9),
+        title: t.title,
+        frequency: t.frequency,
+        completedDates: [],
+        createdAt: Date.now()
+      }));
+      setTasks(newTasks);
+      saveAll(library, profile, newTasks, plan);
+    } catch (e) {
+      handleError(e);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleRefreshWeeklySummary = async () => {
+    if (library.length < 1) return;
+    setIsProcessing(true);
+    try {
+      const summary = await gemini.generateWeeklySummary(library);
+      setWeeklySummary(summary);
+    } catch (e) {
+      handleError(e);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleToggleTask = (id: string) => {
+    const today = new Date().toISOString().split('T')[0];
+    const updatedTasks = tasks.map(t => {
+      if (t.id === id) {
+        const isCompleted = t.completedDates.includes(today);
+        return {
+          ...t,
+          completedDates: isCompleted 
+            ? t.completedDates.filter(d => d !== today)
+            : [...t.completedDates, today],
+          lastCompleted: isCompleted ? t.lastCompleted : today
+        };
+      }
+      return t;
+    });
+    setTasks(updatedTasks);
+    storageService.saveTasks(updatedTasks);
+  };
+
+  const handleCheckIn = async () => {
+    if (!profile) return;
+    setIsProcessing(true);
+    try {
+      const fb = await gemini.getCheckInFeedback(tasks, profile);
+      setFeedback(fb);
+      await handleSpeak(fb);
+    } catch (e) {
+      handleError(e);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
   const openKeySelector = async () => {
     if ((window as any).aistudio?.openSelectKey) {
       await (window as any).aistudio.openSelectKey();
@@ -168,7 +230,7 @@ const App: React.FC = () => {
   const radarData = [
     { subject: '核心价值', A: 85, fullMark: 100 },
     { subject: '优势才华', A: profile.strengths.length * 20, fullMark: 100 },
-    { subject: '改善动力', A: profile.shortcomings.length * 25, fullMark: 100 },
+    { subject: '影子人格', A: profile.shortcomings.length * 25, fullMark: 100 },
     { subject: '兴趣深度', A: profile.interestDirections.length * 20, fullMark: 100 },
     { subject: '羁绊等级', A: profile.affinity, fullMark: 100 },
   ];
@@ -224,8 +286,9 @@ const App: React.FC = () => {
           <div className="space-y-8 animate-in">
             <GuidedQA onAnswer={(c, cat) => {
               const entry = { id: Math.random().toString(36).substr(2, 9), content: c, category: cat as ExperienceCategory, timestamp: Date.now(), tags: ['qa'] };
-              setLibrary([entry, ...library]);
-              storageService.saveLibrary([entry, ...library]);
+              const newLib = [entry, ...library];
+              setLibrary(newLib);
+              storageService.saveLibrary(newLib);
             }} />
             <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
               <h3 className="text-sm font-bold text-slate-400 mb-4 uppercase tracking-widest">快速录入</h3>
@@ -305,15 +368,81 @@ const App: React.FC = () => {
                   <RadarChart cx="50%" cy="50%" outerRadius="80%" data={radarData}>
                     <PolarGrid stroke="#e2e8f0" />
                     <PolarAngleAxis dataKey="subject" tick={{fontSize: 10, fill: '#64748b'}} />
-                    <Radar name="Self" dataKey="A" stroke="#4f46e5" fill="#4f46e5" fillOpacity={0.6} />
+                    <RechartsRadar name="Self" dataKey="A" stroke="#4f46e5" fill="#4f46e5" fillOpacity={0.6} />
                   </RadarChart>
                 </ResponsiveContainer>
               </div>
             </div>
           </div>
         )}
-        
-        {/* 其他视图 (EXPLORE, TASKS) 的逻辑保持原样... */}
+
+        {currentView === 'EXPLORE' && (
+          <div className="space-y-12 pb-12 animate-in">
+            {!growthPlan ? (
+              <div className="bg-indigo-900 text-white p-12 rounded-[3rem] text-center relative overflow-hidden shadow-2xl">
+                <h2 className="text-3xl font-black mb-4">开启生命地图</h2>
+                <p className="text-indigo-200 max-w-lg mx-auto mb-8">
+                  基于你的个人经历，提炼核心价值并制定深度成长计划。
+                </p>
+                <button 
+                  onClick={handleGeneratePlan}
+                  disabled={isProcessing || library.length < 3}
+                  className="bg-white text-indigo-900 px-8 py-4 rounded-full font-black shadow-2xl disabled:opacity-50"
+                >
+                  {isProcessing ? '正在解析中...' : '生成成长计划'}
+                </button>
+                {library.length < 3 && <p className="text-[10px] mt-4 opacity-60">需要至少 3 条经历条目以供分析</p>}
+              </div>
+            ) : (
+              <div className="animate-in space-y-8">
+                <div className="bg-white p-8 rounded-[2.5rem] shadow-sm border border-slate-100">
+                   <div className="flex justify-between items-center mb-6">
+                    <h3 className="text-2xl font-black text-slate-800 flex items-center gap-3">
+                      <i className="fas fa-compass text-indigo-500"></i> 核心导航
+                    </h3>
+                    <button onClick={handleGeneratePlan} className="text-xs font-bold text-indigo-600">重新生成</button>
+                   </div>
+                  <div className="prose prose-slate max-w-none mb-10">
+                    <p className="text-slate-700 leading-relaxed bg-slate-50 p-6 rounded-2xl italic border border-slate-100">
+                      {growthPlan.coreValuesAnalysis}
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-10">
+                    <div className="space-y-3">
+                        <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">事业方向建议</h4>
+                        {growthPlan.directions.map((dir, i) => (
+                          <div key={i} className="bg-white border border-slate-100 p-5 rounded-2xl shadow-sm">
+                            <h5 className="font-bold text-slate-800 mb-1">{dir.title}</h5>
+                            <p className="text-xs text-slate-500">{dir.reasoning}</p>
+                          </div>
+                        ))}
+                    </div>
+                    <div className="space-y-6">
+                       <div>
+                        <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">短期目标 (1-3m)</h4>
+                        <ul className="space-y-2">
+                          {growthPlan.shortTerm.map((goal, i) => (
+                            <li key={i} className="flex items-center gap-3 text-sm text-slate-600 bg-slate-50 p-3 rounded-xl">
+                              <i className="fas fa-check-circle text-indigo-500"></i> {goal}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+            <CapabilityTree entries={library} />
+            <WeeklyRetrospective summary={weeklySummary} isLoading={isProcessing} onRefresh={handleRefreshWeeklySummary} />
+          </div>
+        )}
+
+        {currentView === 'TASKS' && (
+          <div className="animate-in">
+            <TaskTracker tasks={tasks} onToggleTask={handleToggleTask} onCheckIn={handleCheckIn} isCheckingIn={isProcessing} feedback={feedback} />
+          </div>
+        )}
       </main>
 
       <nav className="fixed bottom-0 left-0 right-0 bg-white/80 backdrop-blur-md border-t border-slate-100 md:hidden z-50 px-6 py-4 flex justify-between items-center">

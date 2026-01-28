@@ -10,17 +10,30 @@ const COMPANION_PERSONA = `你是一个充满温情、洞察力极强的“虚�
 const MAX_RETRIES = 3;
 const INITIAL_BACKOFF = 2000;
 
+// 防御性分类映射逻辑，确保 AI 返回的分类能正确对应到系统的 ExperienceCategory
+const mapToCategory = (cat: string | undefined): ExperienceCategory => {
+  if (!cat) return 'PERSONAL';
+  const c = cat.toUpperCase().trim();
+  if (c.includes('CAREER') || c.includes('职') || c.includes('学')) return 'CAREER';
+  if (c.includes('ACHIEVEMENT') || c.includes('成就') || c.includes('高光')) return 'ACHIEVEMENT';
+  if (c.includes('JOY') || c.includes('愉悦') || c.includes('乐')) return 'JOY';
+  if (c.includes('REGRET') || c.includes('遗憾') || c.includes('选')) return 'CHOICE_REGRET';
+  if (c.includes('INTEREST') || c.includes('兴趣')) return 'INTEREST';
+  if (c.includes('ABILITY') || c.includes('短板') || c.includes('能')) return 'ABILITY_SHORTCOMING';
+  if (c.includes('VISION') || c.includes('愿景') || c.includes('未')) return 'VISION';
+  if (c.includes('ANXIETY') || c.includes('焦虑') || c.includes('困') || c.includes('底线')) return 'ANXIETY';
+  return 'PERSONAL';
+};
+
 // 增强版 JSON 解析器：处理 Markdown 代码块、首尾杂质文本
 const parseGeminiJson = (text: string | undefined) => {
   if (!text) throw new Error("AI 返回内容为空");
   
-  // 1. 尝试提取 ```json ... ``` 块中的内容
   let jsonStr = text;
   const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
   if (jsonMatch && jsonMatch[1]) {
     jsonStr = jsonMatch[1];
   } else {
-    // 2. 尝试提取第一个 { 或 [ 到最后一个 } 或 ] 之间的内容
     const firstBrace = text.indexOf('{');
     const firstBracket = text.indexOf('[');
     const start = (firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)) ? firstBrace : firstBracket;
@@ -46,7 +59,6 @@ const parseGeminiJson = (text: string | undefined) => {
 async function callWithRetry<T>(fn: (ai: GoogleGenAI) => Promise<T>): Promise<T> {
   let lastError: any;
   for (let i = 0; i < MAX_RETRIES; i++) {
-    // 每次尝试都重新初始化，确保获取最新的 API Key
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     try {
       return await fn(ai);
@@ -54,7 +66,6 @@ async function callWithRetry<T>(fn: (ai: GoogleGenAI) => Promise<T>): Promise<T>
       lastError = error;
       const message = error?.message || "";
       
-      // 处理 API Key 缺失或无效
       if (message.includes("Requested entity was not found") || message.includes("API_KEY_INVALID")) {
         if ((window as any).aistudio?.openSelectKey) {
           await (window as any).aistudio.openSelectKey();
@@ -62,7 +73,6 @@ async function callWithRetry<T>(fn: (ai: GoogleGenAI) => Promise<T>): Promise<T>
         }
       }
 
-      // 处理频率限制
       if (message.includes("429") || message.includes("RESOURCE_EXHAUSTED")) {
         const delay = INITIAL_BACKOFF * Math.pow(2, i);
         await new Promise(resolve => setTimeout(resolve, delay));
@@ -140,6 +150,7 @@ export const initializeProfileFromOnboarding = async (data: OnboardingData): Pro
       profile: { ...result.profile, gender: data.gender, initialized: false },
       entries: result.entries.map((e: any) => ({
         ...e,
+        category: mapToCategory(e.category), // 强制映射分类
         id: Math.random().toString(36).substr(2, 9),
         timestamp: Date.now()
       }))
@@ -246,7 +257,11 @@ export const processRawInput = async (input: string): Promise<Partial<Experience
         }
       }
     });
-    return parseGeminiJson(response.text);
+    const result = parseGeminiJson(response.text);
+    return result.map((r: any) => ({
+      ...r,
+      category: mapToCategory(r.category) // 强制映射分类
+    }));
   });
 };
 

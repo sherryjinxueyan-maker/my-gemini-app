@@ -9,6 +9,7 @@ interface ExperienceLibraryProps {
 }
 
 const ExperienceLibrary: React.FC<ExperienceLibraryProps> = ({ entries, onDelete }) => {
+  if (!entries) return null;
   const sortedEntries = [...entries].sort((a, b) => b.timestamp - a.timestamp);
 
   return (
@@ -25,11 +26,15 @@ const ExperienceLibrary: React.FC<ExperienceLibraryProps> = ({ entries, onDelete
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {sortedEntries.map((entry) => {
-            const config = CATEGORY_LABELS[entry.category];
+            if (!entry) return null;
+            // 安全查找分类配置，强制降级逻辑
+            const category = entry.category || 'PERSONAL';
+            const config = CATEGORY_LABELS[category] || CATEGORY_LABELS.PERSONAL;
+            
             return (
               <div key={entry.id} className="bg-white p-4 rounded-xl shadow-sm border border-slate-100 hover:shadow-md transition-shadow relative group">
                 <div className="flex items-center gap-2 mb-2">
-                  <span className={`p-1.5 rounded-lg text-xs flex items-center gap-1.5 ${config.color}`}>
+                  <span className={`p-1.5 rounded-lg text-xs flex items-center gap-1.5 ${config.color || 'bg-slate-100 text-slate-700'}`}>
                     {config.icon}
                     {config.label}
                   </span>
@@ -41,7 +46,7 @@ const ExperienceLibrary: React.FC<ExperienceLibraryProps> = ({ entries, onDelete
                   {entry.content}
                 </p>
                 <div className="flex flex-wrap gap-1">
-                  {entry.tags.map(tag => (
+                  {(entry.tags || []).map(tag => (
                     <span key={tag} className="text-[10px] px-2 py-0.5 bg-slate-100 text-slate-500 rounded-full">
                       #{tag}
                     </span>
