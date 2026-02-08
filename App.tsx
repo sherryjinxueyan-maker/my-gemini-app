@@ -17,7 +17,6 @@ import { Radar, RadarChart, PolarGrid, PolarAngleAxis, ResponsiveContainer, Rada
 type View = 'LIBRARY' | 'COMPANION' | 'EXPLORE' | 'TASKS';
 
 const App: React.FC = () => {
-console.log("当前 API Key 加载状态:", import.meta.env.VITE_API_KEY ? "已连接" : "未找到");
   const [library, setLibrary] = useState<ExperienceEntry[]>([]);
   const [profile, setProfile] = useState<VirtualSelfProfile | null>(null);
   const [currentView, setCurrentView] = useState<View>('LIBRARY');
