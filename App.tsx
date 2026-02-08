@@ -11,8 +11,7 @@ import CompanionAvatar from './components/CompanionAvatar';
 import WeeklyRetrospective from './components/WeeklyRetrospective';
 import CapabilityTree from './components/CapabilityTree';
 import Onboarding from './components/Onboarding';
-import { speechService } from './services/speechService';
-import { Radar, RadarChart, PolarGrid, PolarAngleAxis, ResponsiveContainer, RadarProps, Radar as RechartsRadar } from 'recharts';
+import { Radar, RadarChart, PolarGrid, PolarAngleAxis, ResponsiveContainer, Radar as RechartsRadar } from 'recharts';
 
 type View = 'LIBRARY' | 'COMPANION' | 'EXPLORE' | 'TASKS';
 
@@ -28,10 +27,7 @@ const App: React.FC = () => {
   const [tasks, setTasks] = useState<ActionTask[]>([]);
   const [feedback, setFeedback] = useState<string>('');
   const [speech, setSpeech] = useState<string>('欢迎回来，今天也一起探索真实的自己吗？');
-  const [isTyping, setIsTyping] = useState(false);
-  const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
-  const [isGeneratingAvatar, setIsGeneratingAvatar] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
@@ -40,8 +36,8 @@ const App: React.FC = () => {
     const savedTasks = storageService.getTasks();
     const savedPlan = storageService.getPlan();
 
-    setLibrary(savedLib);
-    setTasks(savedTasks);
+    setLibrary(savedLib || []);
+    setTasks(savedTasks || []);
     setGrowthPlan(savedPlan);
     if (savedProfile) setProfile(savedProfile);
   }, []);
@@ -49,14 +45,8 @@ const App: React.FC = () => {
   const handleError = (e: any) => {
     console.error("App Error:", e);
     const msg = e?.message || "发生未知错误";
-    if (msg.includes("quota") || msg.includes("429")) {
-      setErrorMsg("Gemini API 配额不足，请稍后重试。");
-    } else if (msg.includes("思想构建失败")) {
-      setErrorMsg("数据解析异常，请尝试精简输入内容。");
-    } else {
-      setErrorMsg(msg);
-    }
-    setTimeout(() => setErrorMsg(null), 6000);
+    setErrorMsg(msg);
+    setTimeout(() => setErrorMsg(null), 5000);
   };
 
   const saveAll = useCallback((newLib: ExperienceEntry[], newProfile: VirtualSelfProfile | null, newTasks: ActionTask[], newPlan: GrowthPlan | null) => {
@@ -75,14 +65,11 @@ const App: React.FC = () => {
       let avatarUrl = "";
       try {
         avatarUrl = await gemini.generateAvatarFromOOTD(initProfile.ootd!, initProfile.gender);
-      } catch (imgError) {
-        console.warn("图像生成失败", imgError);
-      }
+      } catch (imgError) {}
       const finalProfile = { ...initProfile, avatarUrl, initialized: true };
       setProfile(finalProfile);
       setLibrary(initEntries);
       saveAll(initEntries, finalProfile, [], null);
-      setSpeech("我已降临。你的过去、现在与未来，我都已悉知。");
       setCurrentView('COMPANION');
     } catch (e) {
       handleError(e);
@@ -97,7 +84,7 @@ const App: React.FC = () => {
     setIsProcessing(true);
     try {
       const results = await gemini.processRawInput(rawInput);
-      const newEntries: ExperienceEntry[] = results.map(r => ({
+      const newEntries = results.map(r => ({
         ...r,
         id: Math.random().toString(36).substr(2, 9),
         timestamp: Date.now(),
@@ -105,7 +92,6 @@ const App: React.FC = () => {
       const updatedLib = [...newEntries, ...library];
       setLibrary(updatedLib);
       setRawInput('');
-      setIsTyping(true);
       const newProfile = await gemini.updateProfile(updatedLib, profile.gender);
       if (profile.avatarUrl) newProfile.avatarUrl = profile.avatarUrl;
       setProfile(newProfile);
@@ -116,7 +102,6 @@ const App: React.FC = () => {
       handleError(e);
     } finally {
       setIsProcessing(false);
-      setIsTyping(false);
     }
   };
 
@@ -133,31 +118,16 @@ const App: React.FC = () => {
     }
   };
 
-  const handleGenerateAvatar = async () => {
-    if (!profile || !profile.ootd) return;
-    setIsGeneratingAvatar(true);
-    try {
-      const url = await gemini.generateAvatarFromOOTD(profile.ootd, profile.gender);
-      const updated = { ...profile, avatarUrl: url };
-      setProfile(updated);
-      storageService.saveProfile(updated);
-    } catch (e) {
-      handleError(e);
-    } finally {
-      setIsGeneratingAvatar(false);
-    }
-  };
-
   const handleGeneratePlan = async () => {
     if (!profile) return;
     setIsProcessing(true);
     try {
       const plan = await gemini.generateGrowthPlan(profile, library);
       setGrowthPlan(plan);
-      const newTasks: ActionTask[] = plan.suggestedTasks.map(t => ({
+      const newTasks: ActionTask[] = (plan.suggestedTasks || []).map(t => ({
         id: Math.random().toString(36).substr(2, 9),
         title: t.title,
-        frequency: t.frequency,
+        frequency: t.frequency as 'DAILY' | 'WEEKLY' | 'ONCE',
         completedDates: [],
         createdAt: Date.now()
       }));
@@ -216,42 +186,33 @@ const App: React.FC = () => {
     }
   };
 
-  const openKeySelector = async () => {
-    if ((window as any).aistudio?.openSelectKey) {
-      await (window as any).aistudio.openSelectKey();
-    }
-  };
-
-  if (!profile) {
-    return <Onboarding onComplete={handleOnboardingComplete} isProcessing={isProcessing} />;
-  }
+  if (!profile) return <Onboarding onComplete={handleOnboardingComplete} isProcessing={isProcessing} />;
 
   const radarData = [
-    { subject: '核心价值', A: 85, fullMark: 100 },
-    { subject: '优势才华', A: profile.strengths.length * 20, fullMark: 100 },
-    { subject: '影子人格', A: profile.shortcomings.length * 25, fullMark: 100 },
-    { subject: '兴趣深度', A: profile.interestDirections.length * 20, fullMark: 100 },
-    { subject: '羁绊等级', A: profile.affinity, fullMark: 100 },
+    { subject: '核心价值', A: 85 },
+    { subject: '优势', A: (profile.strengths || []).length * 20 },
+    { subject: '挑战', A: (profile.shortcomings || []).length * 25 },
+    { subject: '兴趣', A: (profile.interestDirections || []).length * 20 },
+    { subject: '羁绊', A: profile.affinity || 50 },
   ];
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-900 pb-24">
       {errorMsg && (
-        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-[100] w-[90%] max-w-md bg-red-600 text-white px-6 py-4 rounded-2xl shadow-2xl flex items-center justify-between animate-in">
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-[100] w-[90%] max-w-md bg-red-600 text-white px-6 py-4 rounded-2xl shadow-2xl flex justify-between">
           <p className="text-sm font-bold">{errorMsg}</p>
           <button onClick={() => setErrorMsg(null)}><i className="fas fa-times"></i></button>
         </div>
       )}
 
       {isProcessing && onboardingStatus && (
-        <div className="fixed inset-0 z-[110] bg-white/80 backdrop-blur-md flex flex-col items-center justify-center text-center">
+        <div className="fixed inset-0 z-[110] bg-white/80 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center">
           <div className="w-16 h-16 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mb-6"></div>
           <h3 className="text-xl font-black">{onboardingStatus}</h3>
-          <p className="text-slate-500 mt-2">请稍候，我们正在构建你的数字分身...</p>
         </div>
       )}
 
-      <header className="bg-white border-b border-slate-100 sticky top-0 z-30 px-6 py-4">
+      <header className="bg-white border-b border-slate-100 sticky top-0 z-30 px-6 py-4 shadow-sm">
         <div className="max-w-5xl mx-auto flex justify-between items-center">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center text-white shadow-lg">
@@ -259,30 +220,19 @@ const App: React.FC = () => {
             </div>
             <h1 className="text-xl font-black">Virtual Self</h1>
           </div>
-          <div className="flex items-center gap-2">
-            <div className="hidden md:flex bg-slate-100 p-1 rounded-xl">
-              {(['LIBRARY', 'COMPANION', 'EXPLORE', 'TASKS'] as View[]).map(v => (
-                <button
-                  key={v}
-                  onClick={() => setCurrentView(v)}
-                  className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${
-                    currentView === v ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400'
-                  }`}
-                >
-                  {v === 'LIBRARY' ? '经历库' : v === 'COMPANION' ? '分身' : v === 'EXPLORE' ? '地图' : '任务'}
-                </button>
-              ))}
-            </div>
-            <button onClick={openKeySelector} className="w-10 h-10 bg-slate-50 rounded-xl text-slate-400 hover:text-indigo-600 transition-all">
-              <i className="fas fa-key"></i>
-            </button>
+          <div className="flex bg-slate-100 p-1 rounded-xl">
+            {(['LIBRARY', 'COMPANION', 'EXPLORE', 'TASKS'] as View[]).map(v => (
+              <button key={v} onClick={() => setCurrentView(v)} className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${currentView === v ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400'}`}>
+                {v === 'LIBRARY' ? '经历' : v === 'COMPANION' ? '分身' : v === 'EXPLORE' ? '地图' : '任务'}
+              </button>
+            ))}
           </div>
         </div>
       </header>
 
       <main className="max-w-5xl mx-auto px-6 pt-8">
         {currentView === 'LIBRARY' && (
-          <div className="space-y-8 animate-in">
+          <div className="space-y-8">
             <GuidedQA onAnswer={(c, cat) => {
               const entry = { id: Math.random().toString(36).substr(2, 9), content: c, category: cat as ExperienceCategory, timestamp: Date.now(), tags: ['qa'] };
               const newLib = [entry, ...library];
@@ -290,22 +240,10 @@ const App: React.FC = () => {
               storageService.saveLibrary(newLib);
             }} />
             <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-              <h3 className="text-sm font-bold text-slate-400 mb-4 uppercase tracking-widest">快速录入</h3>
               <div className="flex gap-3">
-                <input 
-                  type="text"
-                  value={rawInput}
-                  onChange={(e) => setRawInput(e.target.value)}
-                  placeholder="刚才发生了什么？"
-                  className="flex-1 bg-slate-50 border-none ring-1 ring-slate-200 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
-                  onKeyDown={(e) => e.key === 'Enter' && handleRawInput()}
-                />
-                <button 
-                  onClick={handleRawInput}
-                  disabled={isProcessing || !rawInput.trim()}
-                  className="bg-indigo-600 text-white px-6 py-3 rounded-xl shadow-md disabled:opacity-50"
-                >
-                  {isProcessing ? <i className="fas fa-spinner fa-spin"></i> : <i className="fas fa-paper-plane"></i>}
+                <input type="text" value={rawInput} onChange={(e) => setRawInput(e.target.value)} placeholder="刚才发生了什么？" className="flex-1 bg-slate-50 border-none ring-1 ring-slate-200 rounded-xl px-4 py-3 text-sm outline-none" onKeyDown={(e) => e.key === 'Enter' && handleRawInput()} />
+                <button onClick={handleRawInput} disabled={isProcessing || !rawInput.trim()} className="bg-indigo-600 text-white px-6 py-3 rounded-xl shadow-md disabled:opacity-50">
+                  <i className="fas fa-paper-plane"></i>
                 </button>
               </div>
             </div>
@@ -318,52 +256,26 @@ const App: React.FC = () => {
         )}
 
         {currentView === 'COMPANION' && (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 animate-in">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
             <div className="lg:col-span-5">
-              <CompanionAvatar 
-                mood={profile.mood} 
-                affinity={profile.affinity} 
-                speech={speech} 
-                avatarUrl={profile.avatarUrl}
-                isTyping={isTyping}
-                onSpeak={() => handleSpeak(speech)}
-                isSpeaking={isSpeaking}
-                onRefreshAvatar={handleGenerateAvatar}
-                isGeneratingAvatar={isGeneratingAvatar}
-              />
+              <CompanionAvatar mood={profile.mood} affinity={profile.affinity} speech={speech} avatarUrl={profile.avatarUrl} onSpeak={() => handleSpeak(speech)} isSpeaking={isSpeaking} onRefreshAvatar={() => {}} />
             </div>
             <div className="lg:col-span-7 space-y-6">
-              <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100">
-                <h3 className="text-lg font-bold mb-4 flex items-center gap-2"><i className="fas fa-dna text-indigo-500"></i> 分身人格特征</h3>
+              <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm">
+                <h3 className="text-lg font-bold mb-4 flex items-center gap-2">人格特征</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="bg-slate-50 p-4 rounded-2xl">
-                    <p className="text-[10px] text-slate-400 font-bold uppercase mb-2">优势才华</p>
-                    <div className="flex flex-wrap gap-1">
-                      {profile.strengths.map(s => <span key={s} className="bg-indigo-50 text-indigo-600 px-2 py-1 rounded-md text-xs font-medium">{s}</span>)}
-                    </div>
+                    <p className="text-[10px] text-slate-400 font-bold mb-2">优势才华</p>
+                    <div className="flex flex-wrap gap-1">{(profile.strengths || []).map(s => <span key={s} className="bg-indigo-50 text-indigo-600 px-2 py-1 rounded-md text-xs">{s}</span>)}</div>
                   </div>
                   <div className="bg-amber-50 p-4 rounded-2xl">
-                    <p className="text-[10px] text-amber-600 font-bold uppercase mb-2">生存底线/影子人格</p>
-                    <div className="flex flex-wrap gap-1">
-                      {profile.shortcomings.map(s => <span key={s} className="bg-white border border-amber-200 text-amber-700 px-2 py-1 rounded-md text-xs font-medium">{s}</span>)}
-                    </div>
+                    <p className="text-[10px] text-amber-600 font-bold mb-2">挑战/底线</p>
+                    <div className="flex flex-wrap gap-1">{(profile.shortcomings || []).map(s => <span key={s} className="bg-white border border-amber-200 text-amber-700 px-2 py-1 rounded-md text-xs">{s}</span>)}</div>
                   </div>
                 </div>
               </div>
-
-              <div className="bg-slate-900 text-white p-6 rounded-3xl shadow-xl">
-                <h3 className="text-sm font-black text-indigo-400 mb-4 uppercase tracking-widest"><i className="fas fa-bolt"></i> 深度决策建议</h3>
-                <div className="space-y-3">
-                  {profile.growthSuggestions.map((s, i) => (
-                    <div key={i} className="flex gap-3 text-sm text-slate-300 bg-slate-800/50 p-3 rounded-xl border border-white/5">
-                       <span className="text-indigo-500 font-black">{i+1}.</span>{s}
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="h-64 bg-white rounded-3xl shadow-sm border border-slate-100 p-4">
-                 <ResponsiveContainer width="100%" height="100%">
+              <div className="h-64 bg-white rounded-3xl border border-slate-100 p-4 shadow-sm">
+                <ResponsiveContainer width="100%" height="100%">
                   <RadarChart cx="50%" cy="50%" outerRadius="80%" data={radarData}>
                     <PolarGrid stroke="#e2e8f0" />
                     <PolarAngleAxis dataKey="subject" tick={{fontSize: 10, fill: '#64748b'}} />
@@ -376,64 +288,39 @@ const App: React.FC = () => {
         )}
 
         {currentView === 'EXPLORE' && (
-          <div className="space-y-12 pb-12 animate-in">
+          <div className="space-y-8 pb-12">
             {!growthPlan ? (
-              <div className="bg-indigo-900 text-white p-12 rounded-[3rem] text-center relative overflow-hidden shadow-2xl">
+              <div className="bg-indigo-900 text-white p-12 rounded-[3rem] text-center shadow-2xl">
                 <h2 className="text-3xl font-black mb-4">开启生命地图</h2>
-                <p className="text-indigo-200 max-w-lg mx-auto mb-8">
-                  基于你的个人经历，提炼核心价值并制定深度成长计划。
-                </p>
-                <button 
-                  onClick={handleGeneratePlan}
-                  disabled={isProcessing || library.length < 3}
-                  className="bg-white text-indigo-900 px-8 py-4 rounded-full font-black shadow-2xl disabled:opacity-50"
-                >
-                  {isProcessing ? '正在解析中...' : '生成成长计划'}
+                <button onClick={handleGeneratePlan} disabled={isProcessing || library.length < 3} className="bg-white text-indigo-900 px-10 py-4 rounded-full font-black shadow-2xl disabled:opacity-50">
+                  {isProcessing ? '正在解析...' : '生成成长计划'}
                 </button>
-                {library.length < 3 && <p className="text-[10px] mt-4 opacity-60">需要至少 3 条经历条目以供分析</p>}
               </div>
             ) : (
-              <div className="animate-in space-y-8">
-                <div className="bg-white p-8 rounded-[2.5rem] shadow-sm border border-slate-100">
-                   <div className="flex justify-between items-center mb-6">
-                    <h3 className="text-2xl font-black text-slate-800 flex items-center gap-3">
-                      <i className="fas fa-compass text-indigo-500"></i> 核心导航
-                    </h3>
-                    <button onClick={handleGeneratePlan} className="text-xs font-bold text-indigo-600">重新生成</button>
-                   </div>
-                  <div className="prose prose-slate max-w-none mb-10">
-                    <p className="text-slate-700 leading-relaxed bg-slate-50 p-6 rounded-2xl italic border border-slate-100">
-                      {growthPlan.coreValuesAnalysis}
-                    </p>
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-10">
-                    <div className="space-y-3">
-                        <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">事业方向建议</h4>
-                        {growthPlan.directions.map((dir, i) => (
-                          <div key={i} className="bg-white border border-slate-100 p-5 rounded-2xl shadow-sm">
-                            <h5 className="font-bold text-slate-800 mb-1">{dir.title}</h5>
-                            <p className="text-xs text-slate-500">{dir.reasoning}</p>
-                          </div>
-                        ))}
+              <div className="space-y-8 animate-in">
+                <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm">
+                  <h3 className="text-2xl font-black text-slate-800 mb-6">核心导航</h3>
+                  <p className="text-slate-700 bg-slate-50 p-6 rounded-2xl italic mb-10 border border-slate-100">{growthPlan.coreValuesAnalysis}</p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    <div>
+                      <h4 className="text-[10px] font-black text-slate-400 uppercase mb-4">建议方向</h4>
+                      {(growthPlan.directions || []).map((dir, i) => (
+                        <div key={i} className="bg-white border border-slate-100 p-5 rounded-2xl shadow-sm mb-3">
+                          <h5 className="font-bold mb-1">{dir.title}</h5>
+                          <p className="text-xs text-slate-500">{dir.reasoning}</p>
+                        </div>
+                      ))}
                     </div>
-                    <div className="space-y-6">
-                       <div>
-                        <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">短期目标 (1-3m)</h4>
-                        <ul className="space-y-2">
-                          {growthPlan.shortTerm.map((goal, i) => (
-                            <li key={i} className="flex items-center gap-3 text-sm text-slate-600 bg-slate-50 p-3 rounded-xl">
-                              <i className="fas fa-check-circle text-indigo-500"></i> {goal}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
+                    <div>
+                      <h4 className="text-[10px] font-black text-slate-400 uppercase mb-4">短期目标</h4>
+                      <ul className="space-y-2">{(growthPlan.shortTerm || []).map((goal, i) => <li key={i} className="text-sm text-slate-600 bg-slate-50 p-3 rounded-xl border border-slate-100">{goal}</li>)}</ul>
                     </div>
                   </div>
                 </div>
+                <CapabilityTree entries={library} />
+                <WeeklyRetrospective summary={weeklySummary} isLoading={isProcessing} onRefresh={handleRefreshWeeklySummary} />
               </div>
             )}
-            <CapabilityTree entries={library} />
-            <WeeklyRetrospective summary={weeklySummary} isLoading={isProcessing} onRefresh={handleRefreshWeeklySummary} />
           </div>
         )}
 
@@ -444,11 +331,11 @@ const App: React.FC = () => {
         )}
       </main>
 
-      <nav className="fixed bottom-0 left-0 right-0 bg-white/80 backdrop-blur-md border-t border-slate-100 md:hidden z-50 px-6 py-4 flex justify-between items-center">
+      <nav className="fixed bottom-0 left-0 right-0 bg-white/80 backdrop-blur-md border-t border-slate-100 md:hidden z-50 px-6 py-3 flex justify-around items-center">
         {(['LIBRARY', 'COMPANION', 'EXPLORE', 'TASKS'] as View[]).map(v => (
-          <button key={v} onClick={() => setCurrentView(v)} className={`flex flex-col items-center gap-1 transition-all ${currentView === v ? 'text-indigo-600 scale-110' : 'text-slate-400'}`}>
-            <i className={`fas fa-${v === 'LIBRARY' ? 'book-open' : v === 'COMPANION' ? 'user-circle' : v === 'EXPLORE' ? 'map' : 'check-double'} text-lg`}></i>
-            <span className="text-[10px] font-bold">{v === 'LIBRARY' ? '记录' : v === 'COMPANION' ? '分身' : v === 'EXPLORE' ? '地图' : '任务'}</span>
+          <button key={v} onClick={() => setCurrentView(v)} className={`flex flex-col items-center gap-1 ${currentView === v ? 'text-indigo-600' : 'text-slate-400'}`}>
+            <i className={`fas fa-${v === 'LIBRARY' ? 'book' : v === 'COMPANION' ? 'user-circle' : v === 'EXPLORE' ? 'map' : 'check-square'}`}></i>
+            <span className="text-[10px] font-bold">{v === 'LIBRARY' ? '经历' : v === 'COMPANION' ? '分身' : v === 'EXPLORE' ? '地图' : '任务'}</span>
           </button>
         ))}
       </nav>

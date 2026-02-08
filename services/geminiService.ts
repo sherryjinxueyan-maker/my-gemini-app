@@ -7,342 +7,145 @@ const COMPANION_PERSONA = `你是一个充满温情、洞察力极强的“虚�
 你的语气：20-30岁，自然、快节奏、口语化。多用“哈”、“嗯”、“对啦”等词。
 核心原则：严禁虚构！必须100%忠实于用户提供的原始文字。`;
 
-const MAX_RETRIES = 3;
-const INITIAL_BACKOFF = 2000;
-
-// 防御性分类映射逻辑，确保 AI 返回的分类能正确对应到系统的 ExperienceCategory
+// 映射逻辑
 const mapToCategory = (cat: string | undefined): ExperienceCategory => {
   if (!cat) return 'PERSONAL';
   const c = cat.toUpperCase().trim();
-  if (c.includes('CAREER') || c.includes('职') || c.includes('学')) return 'CAREER';
-  if (c.includes('ACHIEVEMENT') || c.includes('成就') || c.includes('高光')) return 'ACHIEVEMENT';
-  if (c.includes('JOY') || c.includes('愉悦') || c.includes('乐')) return 'JOY';
-  if (c.includes('REGRET') || c.includes('遗憾') || c.includes('选')) return 'CHOICE_REGRET';
-  if (c.includes('INTEREST') || c.includes('兴趣')) return 'INTEREST';
-  if (c.includes('ABILITY') || c.includes('短板') || c.includes('能')) return 'ABILITY_SHORTCOMING';
-  if (c.includes('VISION') || c.includes('愿景') || c.includes('未')) return 'VISION';
-  if (c.includes('ANXIETY') || c.includes('焦虑') || c.includes('困') || c.includes('底线')) return 'ANXIETY';
+  if (c.includes('CAREER')) return 'CAREER';
+  if (c.includes('ACHIEVEMENT')) return 'ACHIEVEMENT';
+  if (c.includes('JOY')) return 'JOY';
+  if (c.includes('REGRET')) return 'CHOICE_REGRET';
+  if (c.includes('INTEREST')) return 'INTEREST';
+  if (c.includes('ABILITY')) return 'ABILITY_SHORTCOMING';
+  if (c.includes('VISION')) return 'VISION';
+  if (c.includes('ANXIETY')) return 'ANXIETY';
   return 'PERSONAL';
 };
 
-// 增强版 JSON 解析器：处理 Markdown 代码块、首尾杂质文本
 const parseGeminiJson = (text: string | undefined) => {
   if (!text) throw new Error("AI 返回内容为空");
-  
-  let jsonStr = text;
-  const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
-  if (jsonMatch && jsonMatch[1]) {
-    jsonStr = jsonMatch[1];
-  } else {
-    const firstBrace = text.indexOf('{');
-    const firstBracket = text.indexOf('[');
-    const start = (firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)) ? firstBrace : firstBracket;
-    
-    if (start !== -1) {
-      const lastBrace = text.lastIndexOf('}');
-      const lastBracket = text.lastIndexOf(']');
-      const end = Math.max(lastBrace, lastBracket);
-      if (end !== -1 && end > start) {
-        jsonStr = text.substring(start, end + 1);
-      }
-    }
-  }
-
+  const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/) || [null, text];
   try {
-    return JSON.parse(jsonStr.trim());
+    return JSON.parse(jsonMatch[1]?.trim() || "{}");
   } catch (e) {
-    console.error("JSON 解析失败。原始文本:", text, "提取后文本:", jsonStr);
-    throw new Error("分身思想构建失败，数据格式异常，请重试。");
+    throw new Error("解析 AI 数据失败");
   }
 };
 
-async function callWithRetry<T>(fn: (ai: GoogleGenAI) => Promise<T>): Promise<T> {
-  let lastError: any;
-  for (let i = 0; i < MAX_RETRIES; i++) {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    try {
-      return await fn(ai);
-    } catch (error: any) {
-      lastError = error;
-      const message = error?.message || "";
-      
-      if (message.includes("Requested entity was not found") || message.includes("API_KEY_INVALID")) {
-        if ((window as any).aistudio?.openSelectKey) {
-          await (window as any).aistudio.openSelectKey();
-          continue;
-        }
-      }
-
-      if (message.includes("429") || message.includes("RESOURCE_EXHAUSTED")) {
-        const delay = INITIAL_BACKOFF * Math.pow(2, i);
-        await new Promise(resolve => setTimeout(resolve, delay));
-        continue;
-      }
-
-      if (i === MAX_RETRIES - 1) throw error;
-      await new Promise(resolve => setTimeout(resolve, 500));
+export const initializeProfileFromOnboarding = async (data: OnboardingData) => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const response = await ai.models.generateContent({
+    model: "gemini-3-flash-preview",
+    contents: JSON.stringify(data),
+    config: {
+      systemInstruction: `${COMPANION_PERSONA}\n任务：基于输入创建初始档案。`,
+      responseMimeType: "application/json",
     }
-  }
-  throw lastError;
-}
-
-export const initializeProfileFromOnboarding = async (data: OnboardingData): Promise<{ profile: VirtualSelfProfile, entries: ExperienceEntry[] }> => {
-  const input = `
-    性别：${data.gender}
-    基本情况：${data.basicInfo}
-    高光满意的事：${data.satisfactions}
-    目前焦虑的事：${data.anxieties}
-    2026愿景：${data.vision2026}
-    极其厌恶/生存底线：${data.antiLife}
-  `;
-
-  return await callWithRetry(async (ai) => {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: input,
-      config: {
-        systemInstruction: `${COMPANION_PERSONA}
-        任务：基于用户输入的六个维度创建初始档案和经历库。
-        **硬性约束：**
-        1. entries 数组：必须包含至少 5 条经历。必须涵盖“高光”、“焦虑”和“底线”。
-        2. 条目提取：必须【原文提取】用户的关键描述。
-        3. 档案性格：分析用户的核心动力，给出 3 条真心建议。`,
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            profile: {
-              type: Type.OBJECT,
-              properties: {
-                coreValues: { type: Type.ARRAY, items: { type: Type.STRING } },
-                strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
-                shortcomings: { type: Type.ARRAY, items: { type: Type.STRING } },
-                growthSuggestions: { type: Type.ARRAY, items: { type: Type.STRING } },
-                joyTriggers: { type: Type.ARRAY, items: { type: Type.STRING } },
-                interestDirections: { type: Type.ARRAY, items: { type: Type.STRING } },
-                summary: { type: Type.STRING },
-                mood: { type: Type.STRING },
-                affinity: { type: Type.NUMBER },
-                ootd: { type: Type.STRING }
-              },
-              required: ["coreValues", "strengths", "shortcomings", "growthSuggestions", "joyTriggers", "interestDirections", "summary", "mood", "affinity", "ootd"]
-            },
-            entries: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  content: { type: Type.STRING },
-                  category: { type: Type.STRING },
-                  tags: { type: Type.ARRAY, items: { type: Type.STRING } }
-                },
-                required: ["content", "category", "tags"]
-              }
-            }
-          },
-          required: ["profile", "entries"]
-        }
-      }
-    });
-    
-    const result = parseGeminiJson(response.text);
-    return {
-      profile: { ...result.profile, gender: data.gender, initialized: false },
-      entries: result.entries.map((e: any) => ({
-        ...e,
-        category: mapToCategory(e.category), // 强制映射分类
-        id: Math.random().toString(36).substr(2, 9),
-        timestamp: Date.now()
-      }))
-    };
   });
+  const result = parseGeminiJson(response.text);
+  return {
+    profile: { ...result.profile, gender: data.gender, initialized: true },
+    entries: (result.entries || []).map((e: any) => ({
+      ...e,
+      category: mapToCategory(e.category),
+      id: Math.random().toString(36).substr(2, 9),
+      timestamp: Date.now()
+    }))
+  };
 };
 
-export const generateAvatarFromOOTD = async (ootdDescription: string, gender: 'MALE' | 'FEMALE' | 'NON_BINARY'): Promise<string> => {
-  const genderPrompt = gender === 'FEMALE' ? 'young woman' : (gender === 'MALE' ? 'young man' : 'person');
-  const prompt = `Anime style 2D portrait of a ${genderPrompt}. Wearing: ${ootdDescription}. Simple background, soft lighting, vibrant colors. High quality.`;
+export const generateAvatarFromOOTD = async (ootdDescription: string, gender: string) => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const prompt = `Anime 2D portrait, ${gender === 'FEMALE' ? 'girl' : 'boy'}, wearing: ${ootdDescription}`;
+  const response = await ai.models.generateContent({
+    model: 'gemini-2.5-flash-image',
+    contents: { parts: [{ text: prompt }] }
+  });
+  const part = response.candidates[0].content.parts.find(p => p.inlineData);
+  return part ? `data:image/png;base64,${part.inlineData.data}` : "";
+};
 
-  return await callWithRetry(async (ai) => {
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash-image',
-      contents: { parts: [{ text: prompt }] },
-      config: { imageConfig: { aspectRatio: "1:1" } }
-    });
-    
-    const imagePart = response.candidates?.[0]?.content?.parts.find(p => p.inlineData);
-    if (imagePart?.inlineData) {
-      return `data:image/png;base64,${imagePart.inlineData.data}`;
+export const generateSpeech = async (text: string, gender: string) => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const response = await ai.models.generateContent({
+    model: "gemini-2.5-flash-preview-tts",
+    contents: [{ parts: [{ text }] }],
+    config: {
+      responseModalities: [Modality.AUDIO],
+      speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: gender === 'MALE' ? 'Puck' : 'Zephyr' } } }
     }
-    throw new Error("图像生成失败，模型未返回图像数据");
   });
+  return response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data || "";
 };
 
-export const generateSpeech = async (text: string, gender: 'MALE' | 'FEMALE' | 'NON_BINARY'): Promise<string> => {
-  const voiceName = gender === 'MALE' ? 'Puck' : 'Zephyr';
-  return await callWithRetry(async (ai) => {
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash-preview-tts",
-      contents: [{ parts: [{ text: text }] }],
-      config: {
-        responseModalities: [Modality.AUDIO],
-        speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName } } }
-      }
-    });
-    return response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data || "";
+export const updateProfile = async (library: ExperienceEntry[], currentGender: string) => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const response = await ai.models.generateContent({
+    model: "gemini-3-flash-preview",
+    contents: `经历：${JSON.stringify(library.slice(0, 10))}`,
+    config: {
+      systemInstruction: `${COMPANION_PERSONA}\n更新档案。`,
+      responseMimeType: "application/json"
+    }
   });
+  return { ...parseGeminiJson(response.text), gender: currentGender, initialized: true };
 };
 
-export const updateProfile = async (library: ExperienceEntry[], currentGender: 'MALE' | 'FEMALE' | 'NON_BINARY'): Promise<VirtualSelfProfile> => {
-  const librarySummary = library.slice(0, 15).map(e => `[${e.category}] ${e.content}`).join('\n');
-  return await callWithRetry(async (ai) => {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: `最新经历：\n${librarySummary}`,
-      config: {
-        systemInstruction: `${COMPANION_PERSONA}\n分析最新数据，更新档案。保持性别：${currentGender}。`,
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            coreValues: { type: Type.ARRAY, items: { type: Type.STRING } },
-            strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
-            shortcomings: { type: Type.ARRAY, items: { type: Type.STRING } },
-            growthSuggestions: { type: Type.ARRAY, items: { type: Type.STRING } },
-            joyTriggers: { type: Type.ARRAY, items: { type: Type.STRING } },
-            interestDirections: { type: Type.ARRAY, items: { type: Type.STRING } },
-            summary: { type: Type.STRING },
-            mood: { type: Type.STRING },
-            affinity: { type: Type.NUMBER },
-            ootd: { type: Type.STRING }
-          },
-          required: ["coreValues", "strengths", "shortcomings", "growthSuggestions", "joyTriggers", "interestDirections", "summary", "mood", "affinity", "ootd"]
-        }
-      }
-    });
-    const result = parseGeminiJson(response.text);
-    return { ...result, gender: currentGender, initialized: true };
+export const getCompanionSpeech = async (context: string, profile: VirtualSelfProfile) => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const response = await ai.models.generateContent({
+    model: "gemini-3-flash-preview",
+    contents: context,
+    config: { systemInstruction: `${COMPANION_PERSONA}\n当前状态：${profile.summary}` }
   });
+  return response.text || "我在听。";
 };
 
-export const getCompanionSpeech = async (context: string, profile: VirtualSelfProfile): Promise<string> => {
-  return await callWithRetry(async (ai) => {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: `语境：${context}`,
-      config: { systemInstruction: `${COMPANION_PERSONA}\n当前状态：${profile.summary}` }
-    });
-    return response.text || "嗯哼，我在。";
+export const processRawInput = async (input: string) => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const response = await ai.models.generateContent({
+    model: "gemini-3-flash-preview",
+    contents: input,
+    config: {
+      systemInstruction: "将输入转为经历 JSON 数组。",
+      responseMimeType: "application/json"
+    }
   });
-};
-
-export const processRawInput = async (input: string): Promise<Partial<ExperienceEntry>[]> => {
-  return await callWithRetry(async (ai) => {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: input,
-      config: {
-        systemInstruction: "将用户描述的经历梳理为 JSON 数组。分类：CAREER, ACHIEVEMENT, JOY, CHOICE_REGRET, INTEREST, ABILITY_SHORTCOMING, VISION, ANXIETY, PERSONAL。",
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              content: { type: Type.STRING },
-              category: { type: Type.STRING },
-              tags: { type: Type.ARRAY, items: { type: Type.STRING } }
-            },
-            required: ["content", "category", "tags"]
-          }
-        }
-      }
-    });
-    const result = parseGeminiJson(response.text);
-    return result.map((r: any) => ({
-      ...r,
-      category: mapToCategory(r.category) // 强制映射分类
-    }));
-  });
+  return parseGeminiJson(response.text).map((r: any) => ({ ...r, category: mapToCategory(r.category) }));
 };
 
 export const generateGrowthPlan = async (profile: VirtualSelfProfile, library: ExperienceEntry[]): Promise<GrowthPlan> => {
-  const context = `核心价值: ${profile.coreValues.join(', ')}; 才华: ${profile.strengths.join(', ')}`;
-  return await callWithRetry(async (ai) => {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-pro-preview",
-      contents: `制定成长计划。经历：${library.slice(0, 10).map(e => e.content).join('; ')}`,
-      config: {
-        systemInstruction: `${COMPANION_PERSONA}\n背景：${context}`,
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            coreValuesAnalysis: { type: Type.STRING },
-            directions: { 
-              type: Type.ARRAY, 
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  title: { type: Type.STRING },
-                  reasoning: { type: Type.STRING },
-                  fit: { type: Type.STRING }
-                }
-              } 
-            },
-            shortTerm: { type: Type.ARRAY, items: { type: Type.STRING } },
-            midTerm: { type: Type.ARRAY, items: { type: Type.STRING } },
-            actionGuide: { type: Type.STRING },
-            suggestedTasks: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  title: { type: Type.STRING },
-                  frequency: { type: Type.STRING, enum: ["DAILY", "WEEKLY", "ONCE"] }
-                }
-              }
-            }
-          },
-          required: ["coreValuesAnalysis", "directions", "shortTerm", "midTerm", "actionGuide", "suggestedTasks"]
-        }
-      }
-    });
-    return parseGeminiJson(response.text);
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const response = await ai.models.generateContent({
+    model: "gemini-3-pro-preview",
+    contents: `经历：${JSON.stringify(library)}`,
+    config: {
+      systemInstruction: `基于经历制定详细的成长计划 JSON。`,
+      responseMimeType: "application/json"
+    }
   });
+  return parseGeminiJson(response.text);
 };
 
-export const getCheckInFeedback = async (tasks: ActionTask[], profile: VirtualSelfProfile): Promise<string> => {
-  return await callWithRetry(async (ai) => {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: "针对今日打卡情况给出反馈。",
-      config: { systemInstruction: `${COMPANION_PERSONA}\n档案：${profile.summary}` }
-    });
-    return response.text || "干得不错！";
+export const getCheckInFeedback = async (tasks: ActionTask[], profile: VirtualSelfProfile) => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const response = await ai.models.generateContent({
+    model: 'gemini-3-flash-preview',
+    contents: "任务完成反馈",
+    config: { systemInstruction: `${COMPANION_PERSONA}\n档案：${profile.summary}` }
   });
+  return response.text || "做得不错！";
 };
 
-export const generateWeeklySummary = async (library: ExperienceEntry[]): Promise<WeeklySummary> => {
-  return await callWithRetry(async (ai) => {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: "生成本周回顾。",
-      config: {
-        systemInstruction: COMPANION_PERSONA,
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            period: { type: Type.STRING },
-            summary: { type: Type.STRING },
-            valueShifts: { type: Type.STRING },
-            topInsights: { type: Type.ARRAY, items: { type: Type.STRING } }
-          },
-          required: ["period", "summary", "valueShifts", "topInsights"]
-        }
-      }
-    });
-    const result = parseGeminiJson(response.text);
-    return { ...result, generatedAt: Date.now() };
+export const generateWeeklySummary = async (library: ExperienceEntry[]) => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const response = await ai.models.generateContent({
+    model: "gemini-3-flash-preview",
+    contents: "生成本周回顾",
+    config: {
+      systemInstruction: COMPANION_PERSONA,
+      responseMimeType: "application/json"
+    }
   });
+  return { ...parseGeminiJson(response.text), generatedAt: Date.now() };
 };
